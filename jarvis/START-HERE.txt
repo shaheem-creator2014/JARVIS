@@ -1,0 +1,48 @@
+JARVIS / WINDOWS
+===============
+1. Extract the complete JARVIS-Windows.zip into a NEW folder.
+2. Open the extracted JARVIS folder.
+3. Double-click START-JARVIS.bat.
+   Or open this folder in VS Code and run: py -3 jarvis.py
+4. Keep the terminal open. The browser opens when the server responds.
+   If needed, type http://127.0.0.1:8720 in Brave or Chrome.
+5. Try: search Arduino
+
+Use Python 3.12 or newer. No pip, npm or extra packages are required.
+Do not use the previous single-file jarvis.py with this package.
+All new source code is already in this ZIP. Do not run upgrade_jarvis.py.
+
+The graph starts with 65 invented demo files. Real files are not scanned.
+PC / Mobile changes the layout; it does not transfer the Python server.
+
+VOICE
+-----
+Click Voice or Configure. The app shows what setup is missing.
+Open .env in VS Code. Enter your key ONLY there:
+ELEVENLABS_API_KEY=your_real_key
+ELEVENLABS_VOICE_ID=your_voice_id
+JARVIS_ALLOW_PAID_API=0
+
+Change the last line to 1 only if you approve possible API charges.
+Restart JARVIS after changes. Your key stays on the Python server.
+A voice ID selects an available ElevenLabs voice. A key alone is not enough.
+Microphone permission is required. Live voice needs Internet and account access.
+
+NATURAL CONVERSATION
+--------------------
+ElevenLabs supplies voice, not the AI conversation model.
+Configure an OpenAI-compatible chat completions endpoint in .env:
+JARVIS_AI_URL=
+JARVIS_AI_MODEL=
+JARVIS_AI_KEY=
+
+Without a model, explicitly labelled offline tools still work:
+search Arduino
+read studies/fractions.md
+remember I prefer clear explanations
+plan my day
+
+If you previously set up .env or saved memories, keep those private.
+To migrate them, stop both versions and copy your old .env and memory/
+into the new folder. Do not overwrite your old folder during extraction.
+Read README.md for security controls, real-folder access and known limits.

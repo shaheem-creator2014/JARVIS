@@ -1,0 +1,72 @@
+'use strict';
+const SILENCE_THRESHOLD_MS = 900;
+const AUDIO_LEVEL_THRESHOLD = 0.025;
+const MAX_RECORDING_MS = 30000;
+const $=id=>document.getElementById(id);
+let token='', graphData=null, busy=false, muted=false, audio=null, playbackURL=null, speechController=null;
+let recorder=null, stream=null, audioContext=null, monitor=null, recordingCancelled=false;
+let session=sessionStorage.getItem('jarvis-session')||crypto.randomUUID();sessionStorage.setItem('jarvis-session',session);
+let editSnapshot=null;
+let voiceReady=false;
+let voiceConfig={message:'Voice configuration is loading.'};
+function setDeviceMode(mode, persist=false){
+  const mobile=mode==='mobile';
+  document.body.classList.toggle('mobile',mobile);
+  $('device-mode').value=mobile?'mobile':'pc';
+  if(persist)localStorage.setItem('jarvis-device-mode',mobile?'mobile':'pc');
+}
+const requestedMode=new URLSearchParams(location.search).get('device');
+setDeviceMode(requestedMode||localStorage.getItem('jarvis-device-mode')||(matchMedia('(max-width:720px)').matches?'mobile':'pc'));
+$('device-mode').onchange=()=>setDeviceMode($('device-mode').value,true);
+const graph=new KnowledgeGraph($('graph'),inspect);
+function state(name,detail=''){ $('state').textContent=name.toUpperCase();$('reactor').className='reactor '+name;$('status').textContent=detail||({idle:'Ready for your next idea.',thinking:'Working on your request…',listening:'Listening. Pause to finish.',speaking:'Speaking. Press Escape to interrupt.',error:'Please check the error card.'}[name]);}
+async function api(path,body={},options={}){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Jarvis-Token':token,...options.headers},body:options.raw||JSON.stringify(body),signal:options.signal});if(!response.ok){const error=await response.json();throw new Error(error.error||'Request failed.');}return options.audio?response.blob():response.json();}
+function message(text,role='assistant'){const box=document.createElement('div');box.className='message '+role;const who=document.createElement('small');who.textContent=role==='user'?'SHAHEEM':'JARVIS';const p=document.createElement('p');p.textContent=text;p.dir='auto';box.append(who,p);$('conversation').append(box);while($('conversation').children.length>20)$('conversation').firstChild.remove();$('conversation').scrollTop=$('conversation').scrollHeight;}
+function showCard(card){$('card').replaceChildren();const title=document.createElement('small');title.textContent=card.title;$('card').append(title);const entries=Array.isArray(card.details)?card.details:[card.details];for(const entry of entries){const pre=document.createElement('pre');pre.textContent=typeof entry==='string'?entry:JSON.stringify(entry,null,2);pre.dir='auto';$('card').append(pre);if(entry?.url){try{const u=new URL(entry.url);if(u.protocol==='https:'){const a=document.createElement('a');a.href=u.href;a.textContent='Open source';a.target='_blank';a.rel='noopener noreferrer';$('card').append(a);}}catch{}}
+ if(entry?.id&&card.title==='Memory'){const edit=document.createElement('button');edit.textContent='Update';edit.onclick=()=>{const text=prompt('Update this memory:',entry.text);if(text)run(()=>api('/api/tool',{name:'remember',args:{text,identifier:entry.id}}));};const remove=document.createElement('button');remove.textContent='Forget';remove.onclick=()=>{if(confirm('Delete this persistent memory?'))run(()=>api('/api/forget',{id:entry.id,confirm:true}));};$('card').append(edit,remove);}}
+}
+function fail(error){if(error.name==='AbortError')return;state('error');message(error.message);showCard({title:'Error · no success claimed',details:error.message});}
+async function run(action){if(busy){message('Please wait for the current request.');return;}busy=true;state('thinking');try{const out=await action();if(out.card){showCard(out.card);message((out.fallback?'[Offline fallback] ':'')+out.spoken);await speak(out.spoken);}if(!audio)state('idle');}catch(e){fail(e);}finally{busy=false;}}
+function inspect(n){$('inspector').replaceChildren();const h=document.createElement('h2');h.textContent=n.name;const meta=document.createElement('pre');meta.textContent=`${n.id}\n${n.type.toUpperCase()} · ${n.size} bytes\n${n.connections} connections`;const p=document.createElement('p');p.textContent=n.excerpt||'Preview unavailable for this file type.';const read=document.createElement('button');read.textContent='Read file';read.onclick=()=>tool('read_files',{paths:[n.id]});$('inspector').append(h,meta,p,read);for(const edge of graphData?.edges.filter(e=>e.source===n.id||e.target===n.id)||[]){const id=edge.source===n.id?edge.target:edge.source;const b=document.createElement('button');b.className='top-item';b.textContent=id+' · '+edge.reason;b.onclick=()=>graph.focus(id);$('inspector').append(b);}}
+async function loadGraph(){try{state('thinking','Indexing requested workspace…');graphData=await api('/api/index');graph.set(graphData);$('graph-count').textContent=graphData.nodes.length+' DOCUMENTS';$('graph-summary').textContent=graphData.nodes.length+' DOCUMENTS  ·  '+graphData.edges.length+' CONNECTIONS  ·  REQUEST-BASED INDEXING';$('top').replaceChildren();for(const n of graphData.top){const button=document.createElement('button');button.className='top-item';const dot=document.createElement('i');dot.className='dot';dot.style.background=TYPE_COLORS[n.type]||'#91abbc';const name=document.createElement('span');name.textContent=n.name;const count=document.createElement('span');count.textContent=n.connections;button.append(dot,name,count);button.onclick=()=>graph.focus(n.id);$('top').append(button);}
+ $('filters').replaceChildren();for(const [type,count] of Object.entries(graphData.counts)){const b=document.createElement('button');b.className='filter';b.setAttribute('aria-pressed','true');const dot=document.createElement('i');dot.className='dot';dot.style.background=TYPE_COLORS[type]||'#91abbc';const label=document.createElement('span');label.textContent=type.toUpperCase();const num=document.createElement('span');num.textContent=count;b.append(dot,label,num);b.onclick=()=>{if(graph.hidden.has(type))graph.hidden.delete(type);else graph.hidden.add(type);b.classList.toggle('off',graph.hidden.has(type));b.setAttribute('aria-pressed',String(!graph.hidden.has(type)));};$('filters').append(b);}state('idle');if(graphData.warnings.length)showCard({title:'Index warnings',details:graphData.warnings});}catch(e){fail(e);}}
+function tool(name,args={}){return run(()=>api('/api/tool',{name,args}));}
+$('chat-form').onsubmit=e=>{e.preventDefault();const text=$('input').value.trim();if(!text||busy)return;$('input').value='';message(text,'user');run(()=>api('/api/chat',{text,session,language:$('language').value}));};
+$('fit').onclick=()=>graph.fit();$('labels').onclick=()=>{graph.labels=!graph.labels;$('labels').setAttribute('aria-pressed',String(graph.labels));};$('index').onclick=loadGraph;
+$('brief').onclick=()=>tool('brief_me');$('plan').onclick=()=>tool('plan_day');$('memories').onclick=()=>run(()=>api('/api/memory'));
+$('tools').onclick=()=>$('tool-dialog').showModal();$('close-tool').onclick=()=>$('tool-dialog').close();$('tool-form').onsubmit=e=>{e.preventDefault();const name=$('tool-name').value,q=$('tool-query').value.trim();let args={query:q};if(name==='read_files')args={paths:[q]};if(name==='remember')args={text:q};if(name==='computer_control')args={kind:$('action-kind').value,target:q};if(name==='write_file'){if(!editSnapshot||editSnapshot.path!==q||!$('confirm-edit').checked){alert('Load the exact file, review the replacement and confirm it first.');return;}args={path:q,content:$('edit-content').value,expected_sha256:editSnapshot.sha256,confirm:true};} $('tool-dialog').close();tool(name,args);};
+$('tool-name').onchange=()=>{$('editor').hidden=$('tool-name').value!=='write_file';editSnapshot=null;$('confirm-edit').checked=false;};
+$('load-edit').onclick=async()=>{try{editSnapshot=await api('/api/edit-preview',{path:$('tool-query').value.trim()});$('edit-content').value=editSnapshot.content;$('confirm-edit').checked=false;}catch(e){alert(e.message);}};
+$('discover-apps').onclick=()=>{$('tool-dialog').close();run(()=>api('/api/apps'));};
+function interrupt(){speechController?.abort();speechController=null;if(audio){audio.pause();audio.src='';audio=null;}if(playbackURL){URL.revokeObjectURL(playbackURL);playbackURL=null;}state('idle');}
+$('mute').onclick=()=>{muted=!muted;$('mute').setAttribute('aria-pressed',String(muted));$('mute').textContent=muted?'Muted':'Sound on';if(muted)interrupt();};
+async function speak(text){if(muted||!voiceReady)return;stopRecording(true);interrupt();speechController=new AbortController();try{const language=$('language').value;const blob=await api('/api/speak',{text:text.slice(0,3000),language:language==='auto'?detectLanguage(text):language},{audio:true,signal:speechController.signal});playbackURL=URL.createObjectURL(blob);audio=new Audio(playbackURL);audio.onended=()=>interrupt();audio.onerror=()=>{interrupt();fail(new Error('Audio playback failed.'));};state('speaking');await audio.play();}catch(e){fail(e);}}
+function detectLanguage(text){if(/[\u0b80-\u0bff]/.test(text))return'ta';if(/[\u0d80-\u0dff]/.test(text))return'si';if(/[\u0600-\u06ff]/.test(text))return'ar';if(/[\u0900-\u097f]/.test(text))return'hi';return'en';}
+function cleanupRecording(){clearInterval(monitor);monitor=null;stream?.getTracks().forEach(t=>t.stop());stream=null;if(audioContext){audioContext.close();audioContext=null;}$('mic').classList.remove('active');$('level').style.width='0';}
+function stopRecording(cancel=false){recordingCancelled=cancel;if(recorder&&recorder.state==='recording')recorder.stop();cleanupRecording();}
+async function startRecording(){interrupt();if(busy){message('Please wait for the current request.');return;}if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){fail(new Error('Audio recording is unavailable in this browser. Use text input.'));return;}
+ try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});audioContext=new AudioContext();await audioContext.resume();const analyser=audioContext.createAnalyser();analyser.fftSize=1024;audioContext.createMediaStreamSource(stream).connect(analyser);const buffer=new Float32Array(analyser.fftSize);const mime=['audio/webm;codecs=opus','audio/ogg;codecs=opus','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);const chunks=[];let lastVoice=performance.now(),heard=false;const started=performance.now();recordingCancelled=false;recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};recorder.onerror=()=>{stopRecording(true);fail(new Error('Microphone recording failed.'));};recorder.onstop=async()=>{const cancelled=recordingCancelled;cleanupRecording();if(cancelled||!heard){if(!cancelled)fail(new Error('No speech detected. Try again or use text.'));return;}busy=true;state('thinking','Transcribing your recording…');try{const blob=new Blob(chunks,{type:recorder.mimeType});const out=await api('/api/listen',{}, {raw:blob,headers:{'Content-Type':blob.type,'X-Language':$('language').value}});$('input').value=out.text;message('Transcription: '+out.text,'user');$('input').value='';busy=false;run(()=>api('/api/chat',{text:out.text,session,language:$('language').value}));}catch(e){busy=false;fail(e);}};recorder.start(250);$('mic').classList.add('active');state('listening');monitor=setInterval(()=>{analyser.getFloatTimeDomainData(buffer);let sum=0;for(const x of buffer)sum+=x*x;const rms=Math.sqrt(sum/buffer.length);$('level').style.width=Math.min(100,rms*600)+'%';const now=performance.now();if(rms>AUDIO_LEVEL_THRESHOLD){heard=true;lastVoice=now;}if((heard&&now-lastVoice>=SILENCE_THRESHOLD_MS)||now-started>MAX_RECORDING_MS)stopRecording();},50);
+ }catch(e){cleanupRecording();fail(new Error(e.name==='NotAllowedError'?'Microphone permission denied. Enable it in browser settings or type instead.':e.name==='NotFoundError'?'No microphone was found. Use text input.':'Unable to record audio: '+e.message));}}
+$('mic').onclick=()=>{if(!voiceReady){$('voice-dialog').showModal();return;}if(audio||speechController){interrupt();return;}if(recorder?.state==='recording')stopRecording();else startRecording();};
+document.addEventListener('keydown',e=>{const typing=e.target.closest('input,textarea,select,[contenteditable="true"]');if(!typing&&(e.code==='Space'||e.key==='Escape')){e.preventDefault();interrupt();if(recorder?.state==='recording')stopRecording(true);}});
+const examples=['Find my robotics notes…','Read studies/fractions.md','Remember I prefer step-by-step explanations','Plan my day','Search portfolio'];let example=0;setInterval(()=>{if(!$('input').value)$('input').placeholder=examples[++example%examples.length];},6000);
+$('voice-setup').onclick=()=>$('voice-dialog').showModal();
+$('close-voice').onclick=()=>$('voice-dialog').close();
+(async()=>{try{
+ const status=await fetch('/api/status').then(r=>r.json());token=status.token;
+ voiceConfig=status.voice_config;voiceReady=voiceConfig.ready;
+ if(!requestedMode&&!localStorage.getItem('jarvis-device-mode')&&status.ui_mode==='mobile')setDeviceMode('mobile');
+ $('mode').textContent=status.mode.toUpperCase()+' MODE';
+ $('voice-label').textContent=voiceReady?'VOICE CONNECTED':'VOICE NEEDS SETUP';
+ $('voice-dot').classList.toggle('ready',voiceReady);
+ $('voice-instructions').textContent=voiceConfig.message;
+ for(const [label,done] of [['API key',voiceConfig.key_present],['Voice selected',voiceConfig.voice_present],['API costs authorized',voiceConfig.costs_allowed]]){
+  const row=document.createElement('p');row.className='voice-check';row.textContent=(done?'✓  ':'○  ')+label;row.classList.toggle('complete',done);$('voice-checklist').append(row);
+ }
+ $('card').replaceChildren();
+ const eyebrow=document.createElement('small');eyebrow.textContent='ALL SYSTEMS · '+status.os.toUpperCase();
+ const heading=document.createElement('h3');heading.textContent=status.ai?'Ready when you are.':'Start with a small idea.';
+ const hint=document.createElement('p');hint.textContent=status.ai?'Your AI provider is configured. Try a question or explore a connected document.':'Try “search Arduino”, “plan my day”, or select a document. Natural conversation needs an AI provider.';
+ $('card').append(eyebrow,heading,hint);
+ if(status.mode==='demo')await loadGraph();
+}catch(e){fail(e);}})();

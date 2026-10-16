@@ -1,0 +1,11 @@
+# Credentials, user content and generated artifacts never belong in Git.
+.env
+.env.*
+!.env.example
+**/__pycache__/
+*.pyc
+**/.local/
+jarvis/memory/*.md
+jarvis/data/demo/
+# Retired helper for the former single-file starter.
+jarvis/upgrade_jarvis.py

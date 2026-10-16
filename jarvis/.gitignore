@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+memory/*.md
+data/demo/
+.local/
+!.env.example
